@@ -56,7 +56,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
 
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": false
   },
   "include": ["src"]
 }

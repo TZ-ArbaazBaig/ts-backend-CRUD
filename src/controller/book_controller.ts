@@ -1,279 +1,167 @@
-import { type Request, type Response, type NextFunction } from "express";
-import { BookModel } from '../models/book_model.js'
-import type { IResponse } from '../types/responce.ts'
-import type { AuthRequest } from "../middleware/auth_middleware.js";
+import { Request, Response, NextFunction } from "express";
+import formidable from "formidable";
+import {
+  createBookService,
+  updateBookService,
+  deleteBookService,
+  getBooksService,
+  bulkCreateBooksService,
+} from "../service/book_service";
+import {
+  createBookSchema,
+  getBooksQuerySchema,
+  updateBookSchema,
+} from "../validations/book_validation";
+import { normalizeFields } from "../utils/formidable_helper";
 
-// --------------------
-// GET BOOKS
-// --------------------
+
+// ==========================
+// GET BOOKS (SEARCH + FILTER + PAGINATION)
+// ==========================
 export const getBooks = async (
-    req: Request,
-    res: Response<IResponse>,
-    next: NextFunction
-) => {
-    try {
-        const books = await BookModel.find().sort({ createdAt: -1 });
-
-        const response: IResponse = {
-            success: true,
-            message: "Books fetched successfully",
-            data: {
-                count: books.length,
-                items: books,
-            },
-        };
-
-        return res.status(200).json(response);
-    } catch (error) {
-        next(error);
-    }
-};
-
-// --------------------
-// ADD BOOK
-// --------------------
-export const addBook = async (
-  req: AuthRequest,
-  res: Response<IResponse>,
+  req: Request,
+  res: Response,
   next: NextFunction
 ) => {
   try {
-    const { name, author, publishYear, description } = req.body;
-
-    // --------------------
-    // BASIC VALIDATION
-    // --------------------
-    if (!name || !author || !publishYear || !description) {
-      return res.status(400).json({
-        success: false,
-        message: "All fields are required",
-      });
-    }
-
-    if (
-      typeof name !== "string" ||
-      typeof author !== "string" ||
-      typeof publishYear !== "number" ||
-      typeof description !== "string"
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid data types provided",
-      });
-    }
-
-    const currentYear = new Date().getFullYear();
-    if (publishYear < 1500 || publishYear > currentYear) {
-      return res.status(400).json({
-        success: false,
-        message: `publishYear must be between 1500 and ${currentYear}`,
-      });
-    }
-
-    // --------------------
-    // DUPLICATE CHECK
-    // --------------------
-    const existingBook = await BookModel.findOne({
-      name: name.trim(),
-      author: author.trim(),
+    // -------------------------
+    // VALIDATE QUERY PARAMS
+    // -------------------------
+    const { error, value } = getBooksQuerySchema.validate(req.query, {
+      abortEarly: false,
+      convert: true,
     });
 
-    if (existingBook) {
-      return res.status(409).json({
+    if (error) {
+      return res.status(400).json({
         success: false,
-        message: "Book already exists",
+        message: error.details.map((d) => d.message).join(", "),
       });
     }
 
-    // --------------------
-    // SAVE TO DB
-    // --------------------
-    const book = await BookModel.create({
-      name: name.trim(),
-      author: author.trim(),
-      publishYear,
-      description: description.trim(),
-    });
+    const { query} = req;
 
-    return res.status(201).json({
+    const result = await getBooksService(query);
+
+    return res.status(200).json({
       success: true,
-      message: "Book added successfully",
-      data: book,
+      message: "Books fetched successfully",
+      data: result.items,
+      pagination: result.pagination,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// --------------------
-// UPDATE BOOK
-// --------------------
-export const updateBook = async (
-  req: Request,
-  res: Response<IResponse>,
-  next: NextFunction
-) => {
-  try {
-    const { id } = req.params;
-    const { name, author, publishYear, description } = req.body;
-    console.log("Updating book with ID:", id);
-    // console.log(id);
-   console.log(req.body);
-    // --------------------
-    // ID VALIDATION
-    // --------------------
-    if (!id) {
-      return res.status(400).json({
-        success: false,
-        message: "Book id is required",
-      });
-    }
 
-    // --------------------
-    // CHECK IF BOOK EXISTS
-    // --------------------
-    const existingBook = await BookModel.findById(id);
+export const addBook = async (req: Request, res: Response, next: NextFunction) => {
+  const form = formidable({ multiples: true });
 
-    if (!existingBook) {
-      return res.status(404).json({
-        success: false,
-        message: "Book not found",
-      });
-    }
+  form.parse(req, async (err, fields, files) => {
+    if (err) return next(err);
 
-    // --------------------
-    // FIELD VALIDATION 
-    // --------------------
-    if (name && typeof name !== "string") {
-      return res.status(400).json({
-        success: false,
-        message: "Name must be a string",
-      });
-    }
+    try {
+      const data = normalizeFields(fields);
 
-    if (author && typeof author !== "string") {
-      return res.status(400).json({
-        success: false,
-        message: "Author must be a string",
-      });
-    }
-
-    if (publishYear) {
-      if (typeof publishYear !== "number") {
+      const { error } = createBookSchema.validate(data);
+      if (error) {
         return res.status(400).json({
           success: false,
-          message: "publishYear must be a number",
+          message: error.message,
         });
       }
 
-      const currentYear = new Date().getFullYear();
-      if (publishYear < 1500 || publishYear > currentYear) {
-        return res.status(400).json({
-          success: false,
-          message: `publishYear must be between 1500 and ${currentYear}`,
-        });
-      }
-    }
+      const book = await createBookService(data, files, res);
 
-    if (description && typeof description !== "string") {
-      return res.status(400).json({
-        success: false,
-        message: "Description must be a string",
+      res.status(201).json({
+        success: true,
+        message: "Book added successfully",
+        data: book,
       });
-    }
-
-    // --------------------
-    // DUPLICATE CHECK (if name/author changing)
-    // --------------------
-    if (name || author) {
-      const duplicateBook = await BookModel.findOne({
-        _id: { $ne: id },
-        name: name?.trim() || existingBook.name,
-        author: author?.trim() || existingBook.author,
-      });
-
-      if (duplicateBook) {
+    } catch (e: any) {
+      if (e.message === "DUPLICATE_BOOK") {
         return res.status(409).json({
           success: false,
-          message: "Another book with same name and author already exists",
+          message: "Book already exists",
         });
       }
+      next(e);
     }
-
-    // --------------------
-    // UPDATE BOOK
-    // --------------------
-    const updatedBook = await BookModel.findByIdAndUpdate(
-      id,
-      {
-        ...(name && { name: name.trim() }),
-        ...(author && { author: author.trim() }),
-        ...(publishYear && { publishYear }),
-        ...(description && { description: description.trim() }),
-      },
-      { new: true, runValidators: true }
-    );
-
-    const response: IResponse = {
-      success: true,
-      message: "Book updated successfully",
-      data: updatedBook,
-    };
-
-    return res.status(200).json(response);
-  } catch (error) {
-    next(error);
-  }
+  });
 };
 
-// --------------------
-// DELETE BOOK
-// --------------------
-export const deleteBook = async (
-  req: Request,
-  res: Response<IResponse>,
-  next: NextFunction
-) => {
-  try {
-    const { id } = req.params;
+export const updateBook = async (req: Request, res: Response, next: NextFunction) => {
+  const form = formidable({ multiples: true });
 
-    // --------------------
-    // ID VALIDATION
-    // --------------------
-    if (!id) {
-      return res.status(400).json({
-        success: false,
-        message: "Book id is required",
+  form.parse(req, async (err, fields, files) => {
+    if (err) return next(err);
+
+    try {
+      const data = normalizeFields(fields);
+
+      const { error } = updateBookSchema.validate(data);
+      if (error) {
+        return res.status(400).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      const book = await updateBookService(req.params.id, data, files, res);
+
+      res.status(200).json({
+        success: true,
+        message: "Book updated successfully",
+        data: book,
       });
+    } catch (e: any) {
+      if (e.message === "BOOK_NOT_FOUND") {
+        return res.status(404).json({
+          success: false,
+          message: "Book not found",
+        });
+      }
+      next(e);
     }
+  });
+};
 
-    // --------------------
-    // CHECK IF BOOK EXISTS
-    // --------------------
-    const existingBook = await BookModel.findById(id);
+export const deleteBook = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const book = await deleteBookService(req.params.id);
 
-    if (!existingBook) {
+    res.status(200).json({
+      success: true,
+      message: "Book deleted successfully",
+      data: book,
+    });
+  } catch (e: any) {
+    if (e.message === "BOOK_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "Book not found",
       });
     }
+    next(e);
+  }
+};
 
-    // --------------------
-    // DELETE BOOK
-    // --------------------
-    await BookModel.findByIdAndDelete(id);
+export const bulkCreateBooksController = async (req: Request, res: Response) => {
+  try {
+    const { books } = req.body;
 
-    const response: IResponse = {
+    const result = await bulkCreateBooksService(books);
+
+    res.status(201).json({
       success: true,
-      message: "Book deleted successfully",
-      data: {
-        id,
-      },
-    };
-
-    return res.status(200).json(response);
-  } catch (error) {
-    next(error);
+      count: result.length,
+      message: "Books inserted successfully",
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      message:  "Bulk insert failed",
+    });
   }
 };
